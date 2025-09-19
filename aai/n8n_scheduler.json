@@ -1,0 +1,822 @@
+{
+  "name": "AI Meeting Scheduler (Slack + Gmail → Google Calendar + Meet)",
+  "nodes": [
+    {
+      "id": "SlackTrigger",
+      "name": "Slack Trigger",
+      "type": "n8n-nodes-base.slackTrigger",
+      "typeVersion": 2,
+      "position": [ -1200, -320 ],
+      "parameters": {
+        "event": "app_mention",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "slackApi": {
+          "id": "",
+          "name": "YOUR_SLACK_CREDENTIAL_NAME"
+        }
+      }
+    },
+    {
+      "id": "GmailTrigger",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 2,
+      "position": [ -1200, 80 ],
+      "parameters": {
+        "triggerOn": "newEmail",
+        "additionalFields": {
+          "includeBody": true,
+          "query": "subject:(schedule) OR (meeting)"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "YOUR_GMAIL_CREDENTIAL_NAME"
+        }
+      }
+    },
+    {
+      "id": "MergeInputs",
+      "name": "Merge (Slack & Gmail)",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [ -940, -120 ],
+      "parameters": {
+        "mode": "passThrough"
+      }
+    },
+    {
+      "id": "NormalizeInput",
+      "name": "Set: Normalize Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [ -720, -120 ],
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "channel",
+              "value": "={{ $json.event ? 'slack' : 'gmail' }}"
+            },
+            {
+              "name": "raw_text",
+              "value": "={{ $json.event ? $json.event.text : ($json.textPlain || $json.snippet || '') }}"
+            },
+            {
+              "name": "reply_channel",
+              "value": "={{ $json.event ? $json.event.channel : '' }}"
+            },
+            {
+              "name": "reply_thread_ts",
+              "value": "={{ $json.event ? ($json.event.thread_ts || $json.event.ts) : '' }}"
+            },
+            {
+              "name": "reply_email",
+              "value": "={{ $json.from || '' }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "LLMParse",
+      "name": "OpenAI: Parse Meeting",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 4,
+      "position": [ -480, -120 ],
+      "parameters": {
+        "operation": "chat",
+        "model": "gpt-4o-mini",
+        "systemMessage": "You are a scheduling parser. Return ONLY valid JSON (no prose) with fields:\\n{\\n  \"attendees\": string[],\\n  \"duration_min\": number,\\n  \"earliest_iso\": string|null,\\n  \"latest_iso\": string|null,\\n  \"title\": string|null,\\n  \"location\": string|null\\n}",
+        "prompt": "Text:\\n{{$json.raw_text}}",
+        "responseFormat": "json_object"
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "",
+          "name": "YOUR_OPENAI_CREDENTIAL_NAME"
+        }
+      }
+    },
+    {
+      "id": "ParseJSON",
+      "name": "Set: Extract Parsed Fields",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [ -240, -120 ],
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "fields.attendees",
+              "value": "={{ (JSON.parse($json.data || $json.text || $json.response || '{}').attendees) || [] }}"
+            },
+            {
+              "name": "fields.duration_min",
+              "value": "={{ JSON.parse($json.data || $json.text || $json.response || '{}').duration_min || 30 }}"
+            },
+            {
+              "name": "fields.earliest_iso",
+              "value": "={{ JSON.parse($json.data || $json.text || $json.response || '{}').earliest_iso || null }}"
+            },
+            {
+              "name": "fields.latest_iso",
+              "value": "={{ JSON.parse($json.data || $json.text || $json.response || '{}').latest_iso || null }}"
+            },
+            {
+              "name": "fields.title",
+              "value": "={{ JSON.parse($json.data || $json.text || $json.response || '{}').title || 'Meeting' }}"
+            },
+            {
+              "name": "fields.location",
+              "value": "={{ JSON.parse($json.data || $json.text || $json.response || '{}').location || null }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "Defaults",
+      "name": "Set: Defaults",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [ 0, -120 ],
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "tz",
+              "value": "={{ $env.DEFAULT_TZ || 'America/Los_Angeles' }}"
+            },
+            {
+              "name": "duration_min",
+              "value": "={{ $json.fields.duration_min || 30 }}"
+            },
+            {
+              "name": "title",
+              "value": "={{ $json.fields.title || 'Meeting' }}"
+            },
+            {
+              "name": "attendees",
+              "value": "={{ $json.fields.attendees || [] }}"
+            },
+            {
+              "name": "earliest_iso",
+              "value": "={{ $json.fields.earliest_iso }}"
+            },
+            {
+              "name": "latest_iso",
+              "value": "={{ $json.fields.latest_iso }}"
+            },
+            {
+              "name": "business_hours",
+              "value": "={{ $env.BUSINESS_HOURS || '09:00-18:00' }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "SetSearchStart",
+      "name": "Set: search_start",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [ 220, -120 ],
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "search_start",
+              "value": "={{ $json.earliest_iso || $now }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ComputeEnd",
+      "name": "Date & Time: +2d (search_end)",
+      "type": "n8n-nodes-base.dateTime",
+      "typeVersion": 2,
+      "position": [ 440, -120 ],
+      "parameters": {
+        "action": "addDuration",
+        "duration": 2,
+        "unit": "days",
+        "datePropertyName": "search_end",
+        "options": {
+          "fromProperty": "search_start"
+        }
+      }
+    },
+    {
+      "id": "FreeBusy",
+      "name": "Google Calendar: FreeBusy",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 4,
+      "position": [ 660, -120 ],
+      "parameters": {
+        "operation": "freeBusy",
+        "timeMin": "={{ $json.search_start }}",
+        "timeMax": "={{ $json.latest_iso || $json.search_end }}",
+        "itemsUi": {
+          "itemValues": [
+            {
+              "id": "={{ $env.GOOGLE_CALENDAR_ID || 'primary' }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "",
+          "name": "YOUR_GOOGLE_CALENDAR_CREDENTIAL_NAME"
+        }
+      }
+    },
+    {
+      "id": "CollectBusy",
+      "name": "Set: Collect Busy",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [ 880, -120 ],
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "busy",
+              "value": "={{ $json.calendars?.[$env.GOOGLE_CALENDAR_ID || 'primary']?.busy || $json.busy || [] }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "LLMDecide",
+      "name": "OpenAI: Decide & Slots",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 4,
+      "position": [ 1100, -120 ],
+      "parameters": {
+        "operation": "chat",
+        "model": "gpt-4o-mini",
+        "systemMessage": "You help schedule meetings. Given busy blocks and constraints, decide:\\n- If a free slot exists in the next 48 hours, choose the earliest valid slot (respect business hours).\\n- Otherwise, propose 2–4 alternative slots within the next 48 hours (respect business hours).\\n\\nReturn ONLY JSON:\\n{\\n  \"route\": \"schedule\" | \"propose\",\\n  \"selected_slot\": { \"start\": \"ISO\", \"end\": \"ISO\" } | null,\\n  \"alternatives\": [{ \"start\": \"ISO\", \"end\": \"ISO\" }, ...]\\n}\\n\\nBusiness hours: {{$json.business_hours}}\\nDuration (minutes): {{$json.duration_min}}\\nTimezone: {{$json.tz}}\\nBusy blocks (ISO): {{ JSON.stringify($json.busy || []) }}",
+        "prompt": "Find earliest available or propose alternatives."
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "",
+          "name": "YOUR_OPENAI_CREDENTIAL_NAME"
+        }
+      }
+    },
+    {
+      "id": "ParseDecision",
+      "name": "Set: Parse Decision JSON",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [ 1320, -120 ],
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "route",
+              "value": "={{ (JSON.parse($json.data || $json.text || $json.response || '{}').route) || 'propose' }}"
+            },
+            {
+              "name": "selected_slot",
+              "value": "={{ JSON.parse($json.data || $json.text || $json.response || '{}').selected_slot || null }}"
+            },
+            {
+              "name": "alternatives",
+              "value": "={{ JSON.parse($json.data || $json.text || $json.response || '{}').alternatives || [] }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "RouteIF",
+      "name": "IF: Route",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [ 1540, -120 ],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.route }}",
+              "operation": "equal",
+              "value2": "schedule"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "LLMSummarize",
+      "name": "OpenAI: Summarize for Calendar",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 4,
+      "position": [ 1760, -300 ],
+      "parameters": {
+        "operation": "chat",
+        "model": "gpt-4o-mini",
+        "systemMessage": "Summarize the following message into 1–2 concise sentences for a calendar description.",
+        "prompt": "Text:\\n{{$json.raw_text}}"
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "",
+          "name": "YOUR_OPENAI_CREDENTIAL_NAME"
+        }
+      }
+    },
+    {
+      "id": "CreateEvent",
+      "name": "Google Calendar: Create Event (Meet)",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 4,
+      "position": [ 1980, -300 ],
+      "parameters": {
+        "operation": "create",
+        "calendar": "={{ $env.GOOGLE_CALENDAR_ID || 'primary' }}",
+        "start": "={{ $json.selected_slot.start }}",
+        "end": "={{ $json.selected_slot.end }}",
+        "summary": "={{ $json.title }}",
+        "description": "={{ $json.data || $json.text || $json.response || '' }}",
+        "additionalFields": {
+          "attendeesUi": {
+            "attendeeValues": "={{ ($json.attendees || []).map(e => ({ email: e })) }}"
+          },
+          "conferenceData": {
+            "createRequest": {
+              "requestId": "={{ $json.selected_slot.start }}",
+              "conferenceSolutionKey": {
+                "type": "hangoutsMeet"
+              }
+            }
+          },
+          "conferenceDataVersion": 1
+        }
+      },
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "",
+          "name": "YOUR_GOOGLE_CALENDAR_CREDENTIAL_NAME"
+        }
+      }
+    },
+    {
+      "id": "ComposeConfirmation",
+      "name": "Set: Compose Confirmation",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [ 2200, -300 ],
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "reply_text",
+              "value": "={{ `Booked: *${$json.summary || 'Meeting'}* from ${$json.start?.dateTime || ''} to ${$json.end?.dateTime || ''}. Meet: ${(($json.conferenceData?.entryPoints || []).find(e => e.entryPointType === 'video')?.uri) || ''} — invites sent.` }}"
+            },
+            {
+              "name": "channel",
+              "value": "={{ $item(0).$node[\"Normalize Input\"].json.channel }}"
+            },
+            {
+              "name": "reply_channel",
+              "value": "={{ $item(0).$node[\"Normalize Input\"].json.reply_channel }}"
+            },
+            {
+              "name": "reply_thread_ts",
+              "value": "={{ $item(0).$node[\"Normalize Input\"].json.reply_thread_ts }}"
+            },
+            {
+              "name": "reply_email",
+              "value": "={{ $item(0).$node[\"Normalize Input\"].json.reply_email }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ReplyPathIF",
+      "name": "IF: Reply Path",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [ 2420, -300 ],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.channel }}",
+              "operation": "equal",
+              "value2": "slack"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "SlackReply",
+      "name": "Slack: Post Message",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [ 2640, -380 ],
+      "parameters": {
+        "operation": "chatPostMessage",
+        "channel": "={{ $json.reply_channel }}",
+        "message": "={{ $json.reply_text }}",
+        "additionalFields": {
+          "threadTs": "={{ $json.reply_thread_ts }}"
+        }
+      },
+      "credentials": {
+        "slackApi": {
+          "id": "",
+          "name": "YOUR_SLACK_CREDENTIAL_NAME"
+        }
+      }
+    },
+    {
+      "id": "GmailReply",
+      "name": "Gmail: Send Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [ 2640, -220 ],
+      "parameters": {
+        "operation": "send",
+        "toList": "={{ $json.reply_email || ($json.attendees && $json.attendees[0]) || '' }}",
+        "subject": "Meeting Scheduled",
+        "message": "={{ $json.reply_text }}"
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "YOUR_GMAIL_CREDENTIAL_NAME"
+        }
+      }
+    },
+    {
+      "id": "ComposeAlternatives",
+      "name": "Set: Compose Alternatives",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [ 1760, 60 ],
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "reply_text",
+              "value": "={{ ($json.alternatives || []).length ? ('No availability. Here are options within 2 days:\\n' + ($json.alternatives || []).slice(0,4).map(a => `• ${a.start} — ${a.end}`).join('\\n') + '\\nReply with your preferred option.') : 'No availability in the next 2 days. Want me to expand the window?' }}"
+            },
+            {
+              "name": "channel",
+              "value": "={{ $item(0).$node[\"Normalize Input\"].json.channel }}"
+            },
+            {
+              "name": "reply_channel",
+              "value": "={{ $item(0).$node[\"Normalize Input\"].json.reply_channel }}"
+            },
+            {
+              "name": "reply_thread_ts",
+              "value": "={{ $item(0).$node[\"Normalize Input\"].json.reply_thread_ts }}"
+            },
+            {
+              "name": "reply_email",
+              "value": "={{ $item(0).$node[\"Normalize Input\"].json.reply_email }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ReplyPathIF2",
+      "name": "IF: Reply Path (Alt)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [ 1980, 60 ],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.channel }}",
+              "operation": "equal",
+              "value2": "slack"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "SlackReplyAlt",
+      "name": "Slack: Post Message (Alt)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [ 2200, -20 ],
+      "parameters": {
+        "operation": "chatPostMessage",
+        "channel": "={{ $json.reply_channel }}",
+        "message": "={{ $json.reply_text }}",
+        "additionalFields": {
+          "threadTs": "={{ $json.reply_thread_ts }}"
+        }
+      },
+      "credentials": {
+        "slackApi": {
+          "id": "",
+          "name": "YOUR_SLACK_CREDENTIAL_NAME"
+        }
+      }
+    },
+    {
+      "id": "GmailReplyAlt",
+      "name": "Gmail: Send Email (Alt)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [ 2200, 140 ],
+      "parameters": {
+        "operation": "send",
+        "toList": "={{ $json.reply_email || ($json.attendees && $json.attendees[0]) || '' }}",
+        "subject": "Meeting Time Options",
+        "message": "={{ $json.reply_text }}"
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "YOUR_GMAIL_CREDENTIAL_NAME"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Slack Trigger": {
+      "main": [
+        [
+          {
+            "node": "Merge (Slack & Gmail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Merge (Slack & Gmail)",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge (Slack & Gmail)": {
+      "main": [
+        [
+          {
+            "node": "Set: Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set: Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "OpenAI: Parse Meeting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI: Parse Meeting": {
+      "main": [
+        [
+          {
+            "node": "Set: Extract Parsed Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set: Extract Parsed Fields": {
+      "main": [
+        [
+          {
+            "node": "Set: Defaults",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set: Defaults": {
+      "main": [
+        [
+          {
+            "node": "Set: search_start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set: search_start": {
+      "main": [
+        [
+          {
+            "node": "Date & Time: +2d (search_end)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Date & Time: +2d (search_end)": {
+      "main": [
+        [
+          {
+            "node": "Google Calendar: FreeBusy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Calendar: FreeBusy": {
+      "main": [
+        [
+          {
+            "node": "Set: Collect Busy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set: Collect Busy": {
+      "main": [
+        [
+          {
+            "node": "OpenAI: Decide & Slots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI: Decide & Slots": {
+      "main": [
+        [
+          {
+            "node": "Set: Parse Decision JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set: Parse Decision JSON": {
+      "main": [
+        [
+          {
+            "node": "IF: Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Route": {
+      "main": [
+        [
+          {
+            "node": "OpenAI: Summarize for Calendar",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Set: Compose Alternatives",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI: Summarize for Calendar": {
+      "main": [
+        [
+          {
+            "node": "Google Calendar: Create Event (Meet)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Calendar: Create Event (Meet)": {
+      "main": [
+        [
+          {
+            "node": "Set: Compose Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set: Compose Confirmation": {
+      "main": [
+        [
+          {
+            "node": "IF: Reply Path",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Reply Path": {
+      "main": [
+        [
+          {
+            "node": "Slack: Post Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gmail: Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set: Compose Alternatives": {
+      "main": [
+        [
+          {
+            "node": "IF: Reply Path (Alt)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Reply Path (Alt)": {
+      "main": [
+        [
+          {
+            "node": "Slack: Post Message (Alt)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gmail: Send Email (Alt)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "meta": {
+    "instanceId": ""
+  },
+  "tags": [
+    {
+      "name": "ai",
+      "id": "ai"
+    },
+    {
+      "name": "scheduling",
+      "id": "scheduling"
+    }
+  ],
+  "pinData": {},
+  "active": false
+}
