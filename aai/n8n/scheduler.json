@@ -90,7 +90,7 @@
       "position": [ -480, -120 ],
       "parameters": {
         "operation": "chat",
-        "model": "gpt-4o-mini",
+        "model": "gpt-5-mini",
         "systemMessage": "You are a scheduling parser. Return ONLY valid JSON (no prose) with fields:\\n{\\n  \"attendees\": string[],\\n  \"duration_min\": number,\\n  \"earliest_iso\": string|null,\\n  \"latest_iso\": string|null,\\n  \"title\": string|null,\\n  \"location\": string|null\\n}",
         "prompt": "Text:\\n{{$json.raw_text}}",
         "responseFormat": "json_object"
