@@ -108,7 +108,7 @@
         "model": {
           "__rl": true,
           "mode": "list",
-          "value": "gpt-4.1-mini"
+          "value": "gpt-5.1-mini"
         },
         "options": {}
       },
